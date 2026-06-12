@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Pool Aim Assistant</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    height: 100%;
+    overflow: hidden;
+    background: #000;
+    font-family: -apple-system, Roboto, Arial, sans-serif;
+    touch-action: none;
+  }
+  #stage {
+    position: relative;
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+  }
+  #camera {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    object-fit: cover;
+    background: #111;
+  }
+  #overlay {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+  }
+  #topbar {
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    padding: 10px 14px;
+    background: linear-gradient(to bottom, rgba(0,0,0,0.6), rgba(0,0,0,0));
+    color: #fff;
+    text-align: center;
+    z-index: 5;
+    pointer-events: none;
+  }
+  #topbar .step {
+    font-size: 16px;
+    font-weight: 600;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+  }
+  #topbar .legend {
+    margin-top: 4px;
+    font-size: 12px;
+    opacity: 0.85;
+  }
+  #controls {
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    padding: 14px 16px calc(16px + env(safe-area-inset-bottom));
+    background: linear-gradient(to top, rgba(0,0,0,0.65), rgba(0,0,0,0));
+    z-index: 5;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    color: #fff;
+  }
+  .slider-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+  }
+  .slider-row input[type=range] {
+    flex: 1;
+  }
+  .buttons {
+    display: flex;
+    gap: 10px;
+  }
+  .buttons button {
+    flex: 1;
+    padding: 12px;
+    font-size: 15px;
+    font-weight: 600;
+    border: none;
+    border-radius: 10px;
+    cursor: pointer;
+  }
+  #resetBtn { background: #ff5252; color: #fff; }
+  #startBtn { background: #2962ff; color: #fff; }
+  #permission {
+    position: absolute;
+    top: 0; left: 0; width: 100%; height: 100%;
+    background: #111;
+    color: #fff;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 24px;
+    z-index: 10;
+    gap: 16px;
+  }
+  #permission p { font-size: 14px; opacity: 0.85; max-width: 320px; }
+  #permission button {
+    padding: 14px 28px;
+    font-size: 16px;
+    font-weight: 700;
+    border: none;
+    border-radius: 10px;
+    background: #2962ff;
+    color: #fff;
+    cursor: pointer;
+  }
+  #error {
+    color: #ff8a80;
+    font-size: 13px;
+    max-width: 320px;
+  }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<div id="permission">
+  <h2>🎱 Pool Aim Assistant</h2>
+  <p>This app uses your camera to overlay an aiming line on the pool table.<br><br>
+  1. Tap the <b>white cue ball</b><br>
+  2. Tap the <b>ball you want to pot</b><br>
+  3. Tap the <b>pocket</b><br><br>
+  The app will then show you exactly where to aim and the "ghost ball" contact point.</p>
+  <button id="startBtn">Open Camera</button>
+  <div id="error"></div>
+</div>
+
+<div id="stage" class="hidden">
+  <video id="camera" autoplay playsinline muted></video>
+  <canvas id="overlay"></canvas>
+
+  <div id="topbar">
+    <div class="step" id="stepText">Step 1: Tap the white cue ball</div>
+    <div class="legend">⚪ Cue ball &nbsp; 🔵 Target ball &nbsp; ⚫ Pocket &nbsp; ➖ Ghost ball</div>
+  </div>
+
+  <div id="controls">
+    <div class="slider-row">
+      <span>Ball size</span>
+      <input type="range" id="ballSize" min="10" max="80" value="30">
+      <span id="ballSizeVal">30px</span>
+    </div>
+    <div class="buttons">
+      <button id="resetBtn">Reset Points</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const permission = document.getElementById('permission');
+const startBtn = document.getElementById('startBtn');
+const errorBox = document.getElementById('error');
+const stage = document.getElementById('stage');
+const video = document.getElementById('camera');
+const canvas = document.getElementById('overlay');
+const ctx = canvas.getContext('2d');
+const stepText = document.getElementById('stepText');
+const resetBtn = document.getElementById('resetBtn');
+const ballSizeSlider = document.getElementById('ballSize');
+const ballSizeVal = document.getElementById('ballSizeVal');
+
+let points = []; // {x, y} for cue, target, pocket
+let ballRadius = 15; // px, half of slider value
+
+function resizeCanvas() {
+  canvas.width = canvas.clientWidth;
+  canvas.height = canvas.clientHeight;
+  draw();
+}
+
+window.addEventListener('resize', resizeCanvas);
+
+startBtn.addEventListener('click', async () => {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' } },
+      audio: false
+    });
+    video.srcObject = stream;
+    permission.classList.add('hidden');
+    stage.classList.remove('hidden');
+    setTimeout(resizeCanvas, 200);
+  } catch (err) {
+    errorBox.textContent = 'Camera access failed: ' + err.message + '. Please allow camera permission and try again.';
+  }
+});
+
+ballSizeSlider.addEventListener('input', () => {
+  ballRadius = parseInt(ballSizeSlider.value, 10) / 2;
+  ballSizeVal.textContent = ballSizeSlider.value + 'px';
+  draw();
+});
+
+resetBtn.addEventListener('click', () => {
+  points = [];
+  updateStepText();
+  draw();
+});
+
+canvas.addEventListener('pointerdown', (e) => {
+  if (points.length >= 3) return;
+  const rect = canvas.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const y = e.clientY - rect.top;
+  points.push({ x, y });
+  updateStepText();
+  draw();
+});
+
+function updateStepText() {
+  if (points.length === 0) stepText.textContent = 'Step 1: Tap the white cue ball';
+  else if (points.length === 1) stepText.textContent = 'Step 2: Tap the ball you want to pot';
+  else if (points.length === 2) stepText.textContent = 'Step 3: Tap the pocket';
+  else stepText.textContent = 'Aim line ready — adjust ball size if needed';
+}
+
+function dist(a, b) {
+  return Math.hypot(b.x - a.x, b.y - a.y);
+}
+
+function drawCircle(p, r, color, fill) {
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+  if (fill) {
+    ctx.fillStyle = color;
+    ctx.fill();
+  }
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = color;
+  ctx.stroke();
+}
+
+function drawLine(a, b, color, dashed) {
+  ctx.beginPath();
+  ctx.moveTo(a.x, a.y);
+  ctx.lineTo(b.x, b.y);
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = color;
+  if (dashed) ctx.setLineDash([10, 8]);
+  else ctx.setLineDash([]);
+  ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // draw placed points
+  if (points.length >= 1) drawCircle(points[0], ballRadius, '#ffffff', false); // cue
+  if (points.length >= 2) drawCircle(points[1], ballRadius, '#29b6f6', false); // target
+
+  if (points.length >= 3) {
+    const cue = points[0];
+    const target = points[1];
+    const pocket = points[2];
+
+    drawCircle(pocket, ballRadius * 0.6, '#212121', true); // pocket marker
+
+    // direction from pocket to target (the line the target ball must travel along)
+    const dx = target.x - pocket.x;
+    const dy = target.y - pocket.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const ux = dx / len;
+    const uy = dy / len;
+
+    // ghost ball position: behind target ball, away from pocket, at distance = ball diameter
+    const ghost = {
+      x: target.x + ux * (ballRadius * 2),
+      y: target.y + uy * (ballRadius * 2)
+    };
+
+    // shot line: target -> pocket (extended through target along the same line, dashed)
+    drawLine(target, pocket, '#ff5252', false);
+
+    // ghost ball outline
+    drawCircle(ghost, ballRadius, '#ffeb3b', false);
+
+    // aim line: cue ball -> ghost ball, extended a bit past
+    const adx = ghost.x - cue.x;
+    const ady = ghost.y - cue.y;
+    const alen = Math.hypot(adx, ady) || 1;
+    const aux = adx / alen;
+    const auy = ady / alen;
+    const extended = {
+      x: ghost.x + aux * 40,
+      y: ghost.y + auy * 40
+    };
+    drawLine(cue, extended, '#76ff03', true);
+
+    // small contact point marker
+    drawCircle(ghost, 4, '#ffeb3b', true);
+  } else {
+    // draw lines between already-placed points as guide
+    for (let i = 1; i < points.length; i++) {
+      drawLine(points[i - 1], points[i], '#ffffff', true);
+    }
+  }
+}
+
+draw();
+</script>
+</body>
+</html>
